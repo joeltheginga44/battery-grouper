@@ -1,7 +1,7 @@
 # Universal Battery Pack Grouper
 
 A Python-based GUI tool designed to help battery builders create perfectly balanced lithium-ion battery packs (e.g., 18650, 21700). 
-
+![Screenshot](https://github.com/joeltheginga44/battery-grouper/raw/main/battery_grouper.png?raw=true)
 ## 📖 Description
 
 Building a custom battery pack (like a 13S5P) requires careful matching of cell capacities and Internal Resistance (IR). If cells are mismatched, the pack will become unbalanced, lose capacity quickly, and potentially become a fire hazard.
