@@ -22,13 +22,19 @@ except ImportError:
 
 
 HISTORY_FILE = "build_history.json"
+SESSIONS_DIR = "sessions"
+
+
+def ensure_sessions_dir():
+    if not os.path.exists(SESSIONS_DIR):
+        os.makedirs(SESSIONS_DIR)
 
 
 class BatteryGrouperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Universal Battery Pack Grouper")
-        self.root.geometry("980x900")
+        self.root.geometry("1000x920")
 
         self.last_groups = None
         self.last_discarded = None
@@ -36,6 +42,7 @@ class BatteryGrouperGUI:
         self.last_raw_data = None
         self.current_map_image = None
         self.current_map_photo = None
+        self.data_dirty = False   # tracks unsaved edits in the data box
 
         # --- Configuration Frame ---
         config_frame = tk.LabelFrame(root, text=" 1. Enter Pack Configuration ", padx=10, pady=10)
@@ -77,14 +84,20 @@ class BatteryGrouperGUI:
 
         tk.Label(top_row, text="Format: (ID, Capacity, IR) or (ID, Capacity, IR, Voltage)").pack(side="left")
 
-        self.import_btn = tk.Button(top_row, text="📂 Import CSV", command=self.import_csv, bg="#2196F3", fg="white")
-        self.import_btn.pack(side="right", padx=5)
+        # Session buttons on left
+        self.load_session_btn = tk.Button(top_row, text="📂 Load Session", command=self.load_session, bg="#3F51B5", fg="white")
+        self.load_session_btn.pack(side="left", padx=5)
+
+        # Right side buttons
+        self.import_btn = tk.Button(top_row, text="📥 Import CSV", command=self.import_csv, bg="#2196F3", fg="white")
+        self.import_btn.pack(side="right", padx=3)
 
         self.clear_btn = tk.Button(top_row, text="🗑️ Clear", command=self.clear_data, bg="#9E9E9E", fg="white")
-        self.clear_btn.pack(side="right", padx=5)
+        self.clear_btn.pack(side="right", padx=3)
 
         self.data_text = scrolledtext.ScrolledText(data_frame, height=8)
         self.data_text.pack(fill="x", pady=5)
+        self.data_text.bind("<KeyRelease>", self._mark_data_dirty)
 
         sample = """(1, 2742, 48), (2, 2338, 58), (3, 2825, 50), (4, 2345, 56), (5, 2468, 61),
 (6, 2374, 55), (7, 2355, 66), (8, 2513, 48), (9, 2386, 59), (10, 2365, 54),
@@ -108,6 +121,7 @@ class BatteryGrouperGUI:
 (97, 2754, 55), (98, 2867, 49), (99, 2386, 51), (100, 2534, 50), (101, 2422, 61),
 (102, 2451, 54), (103, 2383, 59), (104, 2459, 54)"""
         self.data_text.insert("1.0", sample)
+        self.data_dirty = False
 
         # --- Action Buttons Row 1 ---
         btn_frame = tk.Frame(root)
@@ -133,7 +147,27 @@ class BatteryGrouperGUI:
                                    bg="#009688", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.excel_btn.pack(side="left", padx=3)
 
-        self.history_btn = tk.Button(btn_frame, text="📜 View History", command=self.view_history,
+        # --- Action Buttons Row 2 (Session features) ---
+        session_frame = tk.Frame(root)
+        session_frame.pack(pady=5)
+
+        self.save_session_btn = tk.Button(session_frame, text="💾 Save Test Session",
+                                          command=self.save_session,
+                                          bg="#1976D2", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
+        self.save_session_btn.pack(side="left", padx=3)
+
+        self.compare_btn = tk.Button(session_frame, text="🔍 Compare Test Runs",
+                                     command=self.compare_sessions,
+                                     bg="#E91E63", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
+        self.compare_btn.pack(side="left", padx=3)
+
+        self.manage_btn = tk.Button(session_frame, text="🗂️ Manage Sessions",
+                                    command=self.manage_sessions,
+                                    bg="#455A64", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
+        self.manage_btn.pack(side="left", padx=3)
+
+        self.history_btn = tk.Button(session_frame, text="📜 Build History",
+                                     command=self.view_history,
                                      bg="#607D8B", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.history_btn.pack(side="left", padx=3)
 
@@ -191,6 +225,29 @@ class BatteryGrouperGUI:
         canvas_frame.grid_rowconfigure(0, weight=1)
         canvas_frame.grid_columnconfigure(0, weight=1)
 
+        # Handle app close for unsaved data
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    # ==========================================
+    # Dirty flag tracking
+    # ==========================================
+    def _mark_data_dirty(self, event=None):
+        self.data_dirty = True
+
+    def on_close(self):
+        if self.data_dirty:
+            answer = messagebox.askyesnocancel(
+                "Unsaved Data",
+                "You have unsaved cell data.\n\nSave as a test session before closing?"
+            )
+            if answer is None:   # Cancel
+                return
+            if answer:           # Yes
+                self.save_session()
+                if self.data_dirty:   # user cancelled save dialog
+                    return
+        self.root.destroy()
+
     # ==========================================
     # IMPORT CSV
     # ==========================================
@@ -241,7 +298,7 @@ class BatteryGrouperGUI:
                         continue
 
             if not cells:
-                messagebox.showerror("CSV Error", "No valid data found in the CSV file.\n\nExpected format: ID, Capacity, IR[, Voltage]")
+                messagebox.showerror("CSV Error", "No valid data found in the CSV file.")
                 return
 
             formatted = ", ".join(
@@ -250,6 +307,7 @@ class BatteryGrouperGUI:
             )
             self.data_text.delete("1.0", tk.END)
             self.data_text.insert("1.0", formatted)
+            self.data_dirty = True
 
             messagebox.showinfo("Import Successful", f"Loaded {len(cells)} cells from:\n{os.path.basename(filepath)}")
 
@@ -262,14 +320,15 @@ class BatteryGrouperGUI:
     def clear_data(self):
         if messagebox.askyesno("Clear Data", "Are you sure you want to clear all cell data?"):
             self.data_text.delete("1.0", tk.END)
+            self.data_dirty = True
 
     # ==========================================
-    # SAVE RESULTS
+    # SAVE RESULTS (text)
     # ==========================================
     def save_results(self):
         content = self.output_text.get("1.0", tk.END).strip()
         if not content:
-            messagebox.showwarning("No Results", "Please generate pack groupings first before saving.")
+            messagebox.showwarning("No Results", "Please generate pack groupings first.")
             return
 
         filepath = filedialog.asksaveasfilename(
@@ -289,6 +348,469 @@ class BatteryGrouperGUI:
             messagebox.showerror("Save Error", f"Failed to save file:\n{e}")
 
     # ==========================================
+    # SAVE TEST SESSION
+    # ==========================================
+    def save_session(self):
+        raw_data = self.parse_data()
+        if not raw_data:
+            messagebox.showwarning("No Data", "There is no valid cell data to save.")
+            return
+
+        # Ask for an optional note
+        note_win = tk.Toplevel(self.root)
+        note_win.title("Save Test Session")
+        note_win.geometry("400x180")
+        note_win.transient(self.root)
+        note_win.grab_set()
+
+        tk.Label(note_win, text="Session Note (optional):").pack(pady=5)
+        note_entry = tk.Entry(note_win, width=50)
+        note_entry.pack(pady=5)
+        note_entry.insert(0, "Test run")
+        note_entry.focus()
+
+        result = {"saved": False}
+
+        def do_save():
+            note = note_entry.get().strip() or "Test run"
+            ensure_sessions_dir()
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = f"session_{timestamp}.json"
+            filepath = os.path.join(SESSIONS_DIR, filename)
+
+            payload = {
+                "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "note": note,
+                "cell_count": len(raw_data),
+                "has_voltage": any(len(c) >= 4 for c in raw_data),
+                "cells": [
+                    {
+                        "id": c[0],
+                        "capacity": c[1],
+                        "ir": c[2],
+                        "voltage": c[3] if len(c) >= 4 else None
+                    }
+                    for c in raw_data
+                ]
+            }
+
+            try:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=2)
+                self.data_dirty = False
+                result["saved"] = True
+                messagebox.showinfo("Saved", f"Session saved to:\n{filepath}")
+                note_win.destroy()
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save session:\n{e}")
+
+        tk.Button(note_win, text="Save", command=do_save, bg="#4CAF50", fg="white", width=15).pack(pady=10)
+        self.root.wait_window(note_win)
+
+    # ==========================================
+    # LOAD TEST SESSION
+    # ==========================================
+    def load_session(self):
+        ensure_sessions_dir()
+        filepath = filedialog.askopenfilename(
+            title="Load Test Session",
+            initialdir=SESSIONS_DIR,
+            filetypes=[("JSON sessions", "*.json"), ("All files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            cells = payload.get("cells", [])
+            if not cells:
+                messagebox.showerror("Load Error", "Session file has no cells.")
+                return
+
+            parts = []
+            for c in cells:
+                if c.get("voltage") is not None:
+                    parts.append(f"({c['id']}, {c['capacity']}, {c['ir']}, {c['voltage']})")
+                else:
+                    parts.append(f"({c['id']}, {c['capacity']}, {c['ir']})")
+
+            self.data_text.delete("1.0", tk.END)
+            self.data_text.insert("1.0", ", ".join(parts))
+            self.data_dirty = False
+
+            info = f"Loaded {len(cells)} cells\nDate: {payload.get('date', 'unknown')}\nNote: {payload.get('note', '')}"
+            messagebox.showinfo("Session Loaded", info)
+
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load session:\n{e}")
+
+    # ==========================================
+    # COMPARE TEST SESSIONS
+    # ==========================================
+    def compare_sessions(self):
+        ensure_sessions_dir()
+        files = sorted([f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")])
+        if len(files) < 2:
+            messagebox.showinfo("Not Enough Sessions",
+                                "You need at least 2 saved test sessions to compare.\n\n"
+                                "Click '💾 Save Test Session' after each round of testing.")
+            return
+
+        # --- Pick Session A ---
+        win = tk.Toplevel(self.root)
+        win.title("Compare Test Sessions")
+        win.geometry("700x600")
+
+        tk.Label(win, text="Select two sessions to compare (usually Test 1 vs Test 2):",
+                 font=("Arial", 11, "bold")).pack(pady=10)
+
+        listbox_a = tk.Listbox(win, height=6, font=("Consolas", 10))
+        listbox_a.pack(fill="x", padx=20, pady=5)
+        for f in files:
+            listbox_a.insert(tk.END, f)
+
+        tk.Label(win, text="Session A (older / first test):").pack(pady=(10, 0))
+
+        # --- Compare thresholds ---
+        thresh_frame = tk.LabelFrame(win, text=" Warning Thresholds ", padx=10, pady=10)
+        thresh_frame.pack(fill="x", padx=20, pady=10)
+
+        tk.Label(thresh_frame, text="Flag if capacity drops more than:").grid(row=0, column=0, sticky="e", padx=5)
+        cap_drop_entry = tk.Entry(thresh_frame, width=6)
+        cap_drop_entry.insert(0, "5")
+        cap_drop_entry.grid(row=0, column=1, padx=5)
+        tk.Label(thresh_frame, text="%").grid(row=0, column=2, sticky="w")
+
+        tk.Label(thresh_frame, text="Flag if IR increases more than:").grid(row=1, column=0, sticky="e", padx=5)
+        ir_rise_entry = tk.Entry(thresh_frame, width=6)
+        ir_rise_entry.insert(0, "20")
+        ir_rise_entry.grid(row=1, column=1, padx=5)
+        tk.Label(thresh_frame, text="%").grid(row=1, column=2, sticky="w")
+
+        tk.Label(thresh_frame, text="Flag if voltage drops more than:").grid(row=2, column=0, sticky="e", padx=5)
+        volt_drop_entry = tk.Entry(thresh_frame, width=6)
+        volt_drop_entry.insert(0, "0.10")
+        volt_drop_entry.grid(row=2, column=1, padx=5)
+        tk.Label(thresh_frame, text="V").grid(row=2, column=2, sticky="w")
+
+        # --- Pick Session B ---
+        tk.Label(win, text="Session B (newer / second test):").pack(pady=(10, 0))
+
+        listbox_b = tk.Listbox(win, height=6, font=("Consolas", 10))
+        listbox_b.pack(fill="x", padx=20, pady=5)
+        for f in files:
+            listbox_b.insert(tk.END, f)
+
+        # Preselect first and last
+        listbox_a.selection_set(0)
+        listbox_b.selection_set(len(files) - 1)
+
+        def run_compare():
+            sel_a = listbox_a.curselection()
+            sel_b = listbox_b.curselection()
+            if not sel_a or not sel_b:
+                messagebox.showwarning("Select Sessions", "Please select one session for A and one for B.")
+                return
+            file_a = os.path.join(SESSIONS_DIR, files[sel_a[0]])
+            file_b = os.path.join(SESSIONS_DIR, files[sel_b[0]])
+
+            try:
+                cap_thresh = float(cap_drop_entry.get())
+                ir_thresh = float(ir_rise_entry.get())
+                volt_thresh = float(volt_drop_entry.get())
+            except ValueError:
+                messagebox.showerror("Invalid Thresholds", "Please enter valid numbers for thresholds.")
+                return
+
+            win.destroy()
+            self._show_comparison(file_a, file_b, cap_thresh, ir_thresh, volt_thresh)
+
+        tk.Button(win, text="🔍 Compare", command=run_compare,
+                  bg="#E91E63", fg="white", font=("Arial", 12, "bold"),
+                  padx=20, pady=8).pack(pady=15)
+
+    def _show_comparison(self, file_a, file_b, cap_thresh, ir_thresh, volt_thresh):
+        try:
+            with open(file_a, "r", encoding="utf-8") as f:
+                data_a = json.load(f)
+            with open(file_b, "r", encoding="utf-8") as f:
+                data_b = json.load(f)
+        except Exception as e:
+            messagebox.showerror("Compare Error", f"Failed to load sessions:\n{e}")
+            return
+
+        cells_a = {c["id"]: c for c in data_a["cells"]}
+        cells_b = {c["id"]: c for c in data_b["cells"]}
+
+        common_ids = sorted(set(cells_a.keys()) & set(cells_b.keys()))
+        only_in_a = sorted(set(cells_a.keys()) - set(cells_b.keys()))
+        only_in_b = sorted(set(cells_b.keys()) - set(cells_a.keys()))
+
+        results = []
+        suspect_cells = []
+
+        for cid in common_ids:
+            a = cells_a[cid]
+            b = cells_b[cid]
+
+            cap_a = a["capacity"]
+            cap_b = b["capacity"]
+            ir_a = a["ir"]
+            ir_b = b["ir"]
+            v_a = a.get("voltage")
+            v_b = b.get("voltage")
+
+            cap_drop_pct = ((cap_a - cap_b) / cap_a * 100) if cap_a else 0
+            ir_rise_pct = ((ir_b - ir_a) / ir_a * 100) if ir_a else 0
+            volt_drop = (v_a - v_b) if (v_a is not None and v_b is not None) else None
+
+            flags = []
+            if cap_drop_pct > cap_thresh:
+                flags.append(f"Cap -{cap_drop_pct:.1f}%")
+            if ir_rise_pct > ir_thresh:
+                flags.append(f"IR +{ir_rise_pct:.1f}%")
+            if volt_drop is not None and volt_drop > volt_thresh:
+                flags.append(f"V -{volt_drop:.3f}V")
+
+            status = "SUSPECT" if flags else "OK"
+
+            if flags:
+                suspect_cells.append((cid, flags))
+
+            results.append({
+                "id": cid,
+                "cap_a": cap_a, "cap_b": cap_b, "cap_drop_pct": cap_drop_pct,
+                "ir_a": ir_a, "ir_b": ir_b, "ir_rise_pct": ir_rise_pct,
+                "v_a": v_a, "v_b": v_b, "volt_drop": volt_drop,
+                "flags": flags, "status": status
+            })
+
+        # --- Display window ---
+        win = tk.Toplevel(self.root)
+        win.title("Session Comparison Results")
+        win.geometry("1000x650")
+
+        # Header info
+        header = (
+            f"Session A: {data_a.get('date', '?')} — {data_a.get('note', '')}\n"
+            f"Session B: {data_b.get('date', '?')} — {data_b.get('note', '')}\n"
+            f"Thresholds: Cap drop > {cap_thresh}%   |   IR rise > {ir_thresh}%   |   Volt drop > {volt_thresh}V"
+        )
+        tk.Label(win, text=header, justify="left", font=("Arial", 10)).pack(pady=10, padx=10, anchor="w")
+
+        # Summary
+        summary = (
+            f"Cells compared: {len(common_ids)}   |   "
+            f"Healthy: {len(common_ids) - len(suspect_cells)}   |   "
+            f"⚠️ Suspect: {len(suspect_cells)}"
+        )
+        tk.Label(win, text=summary, font=("Arial", 11, "bold"), fg="darkred").pack(pady=5)
+
+        # Treeview
+        tree_frame = tk.Frame(win)
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        columns = ("ID", "Cap A", "Cap B", "ΔCap %", "IR A", "IR B", "ΔIR %", "V A", "V B", "ΔV", "Status")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=20)
+
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=85, anchor="center")
+
+        # Colours for suspicious rows
+        tree.tag_configure("suspect", background="#FFD6D6", foreground="#8B0000")
+        tree.tag_configure("ok", background="#FFFFFF")
+
+        for r in results:
+            v_a_str = f"{r['v_a']:.3f}" if r['v_a'] is not None else "-"
+            v_b_str = f"{r['v_b']:.3f}" if r['v_b'] is not None else "-"
+            dv_str = f"{r['volt_drop']:.3f}" if r['volt_drop'] is not None else "-"
+
+            values = (
+                r["id"],
+                f"{r['cap_a']:.0f}",
+                f"{r['cap_b']:.0f}",
+                f"{r['cap_drop_pct']:.2f}",
+                f"{r['ir_a']:.0f}",
+                f"{r['ir_b']:.0f}",
+                f"{r['ir_rise_pct']:.2f}",
+                v_a_str,
+                v_b_str,
+                dv_str,
+                r["status"],
+            )
+            tag = "suspect" if r["status"] == "SUSPECT" else "ok"
+            tree.insert("", "end", values=values, tags=(tag,))
+
+        tree.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        scrollbar.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        # Notes section
+        notes_frame = tk.Frame(win)
+        notes_frame.pack(fill="x", padx=10, pady=5)
+
+        if only_in_a:
+            tk.Label(notes_frame,
+                     text=f"Cells only in Session A (removed): {', '.join(map(str, only_in_a))}",
+                     fg="gray", font=("Arial", 9)).pack(anchor="w")
+        if only_in_b:
+            tk.Label(notes_frame,
+                     text=f"Cells only in Session B (new): {', '.join(map(str, only_in_b))}",
+                     fg="gray", font=("Arial", 9)).pack(anchor="w")
+
+        if suspect_cells:
+            tk.Label(notes_frame,
+                     text=f"⚠️ Suspect cells to consider discarding: {', '.join(str(c[0]) for c in suspect_cells)}",
+                     fg="darkred", font=("Arial", 10, "bold")).pack(anchor="w", pady=5)
+
+            def save_suspects():
+                filepath = filedialog.asksaveasfilename(
+                    title="Save Suspect Cell List",
+                    defaultextension=".txt",
+                    filetypes=[("Text files", "*.txt")],
+                    initialfile="suspect_cells.txt"
+                )
+                if not filepath:
+                    return
+                lines = [f"Suspect cells flagged by comparison on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"]
+                lines.append(f"Session A: {data_a.get('date', '?')}")
+                lines.append(f"Session B: {data_b.get('date', '?')}")
+                lines.append("")
+                for cid, flags in suspect_cells:
+                    lines.append(f"Cell #{cid}: {', '.join(flags)}")
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                messagebox.showinfo("Saved", f"Saved to:\n{filepath}")
+
+            tk.Button(notes_frame, text="💾 Save Suspect List",
+                      command=save_suspects, bg="#E91E63", fg="white").pack(anchor="w", pady=5)
+
+    # ==========================================
+    # MANAGE SESSIONS
+    # ==========================================
+    def manage_sessions(self):
+        ensure_sessions_dir()
+        files = sorted([f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")], reverse=True)
+
+        win = tk.Toplevel(self.root)
+        win.title("Manage Test Sessions")
+        win.geometry("700x500")
+
+        tk.Label(win, text=f"Saved sessions folder: {os.path.abspath(SESSIONS_DIR)}",
+                 fg="gray", font=("Arial", 9)).pack(pady=5)
+
+        if not files:
+            tk.Label(win, text="No saved sessions yet.", font=("Arial", 11)).pack(pady=20)
+            return
+
+        list_frame = tk.Frame(win)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        listbox = tk.Listbox(list_frame, font=("Consolas", 10), selectmode="extended")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.configure(yscrollcommand=scrollbar.set)
+
+        def refresh_list():
+            listbox.delete(0, tk.END)
+            current_files = sorted([f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")], reverse=True)
+            for f in current_files:
+                # Show date, note
+                try:
+                    with open(os.path.join(SESSIONS_DIR, f), "r", encoding="utf-8") as fh:
+                        payload = json.load(fh)
+                    date = payload.get("date", "?")
+                    note = payload.get("note", "")
+                    count = payload.get("cell_count", "?")
+                    listbox.insert(tk.END, f"{f}   |   {date}   |   {count} cells   |   {note}")
+                except Exception:
+                    listbox.insert(tk.END, f"{f}   (unreadable)")
+
+        refresh_list()
+
+        btn_row = tk.Frame(win)
+        btn_row.pack(fill="x", pady=10)
+
+        def delete_selected():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("No Selection", "Please select one or more sessions to delete.")
+                return
+            if not messagebox.askyesno("Delete", f"Permanently delete {len(sel)} session(s)?"):
+                return
+            current_files = sorted([f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")], reverse=True)
+            for idx in sel:
+                f = current_files[idx]
+                try:
+                    os.remove(os.path.join(SESSIONS_DIR, f))
+                except Exception as e:
+                    messagebox.showerror("Delete Error", f"Could not delete {f}:\n{e}")
+            refresh_list()
+
+        def load_selected():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("No Selection", "Please select a session to load.")
+                return
+            current_files = sorted([f for f in os.listdir(SESSIONS_DIR) if f.endswith(".json")], reverse=True)
+            f = current_files[sel[0]]
+            filepath = os.path.join(SESSIONS_DIR, f)
+            try:
+                with open(filepath, "r", encoding="utf-8") as fh:
+                    payload = json.load(fh)
+                cells = payload.get("cells", [])
+                parts = []
+                for c in cells:
+                    if c.get("voltage") is not None:
+                        parts.append(f"({c['id']}, {c['capacity']}, {c['ir']}, {c['voltage']})")
+                    else:
+                        parts.append(f"({c['id']}, {c['capacity']}, {c['ir']})")
+                self.data_text.delete("1.0", tk.END)
+                self.data_text.insert("1.0", ", ".join(parts))
+                self.data_dirty = False
+                messagebox.showinfo("Loaded", f"Loaded {len(cells)} cells from {f}")
+                win.destroy()
+            except Exception as e:
+                messagebox.showerror("Load Error", f"Failed to load:\n{e}")
+
+        tk.Button(btn_row, text="📂 Load Selected", command=load_selected,
+                  bg="#3F51B5", fg="white", padx=15, pady=5).pack(side="left", padx=5)
+        tk.Button(btn_row, text="🗑️ Delete Selected", command=delete_selected,
+                  bg="#E53935", fg="white", padx=15, pady=5).pack(side="left", padx=5)
+        tk.Button(btn_row, text="Close", command=win.destroy,
+                  padx=15, pady=5).pack(side="right", padx=5)
+
+    # ==========================================
+    # SAVE MAP AS PNG
+    # ==========================================
+    def save_map_png(self):
+        if self.current_map_image is None:
+            messagebox.showwarning("No Map", "Please generate the cell map first.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Cell Map As",
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png")],
+            initialfile="battery_cell_map.png"
+        )
+        if not filepath:
+            return
+
+        try:
+            self.current_map_image.save(filepath)
+            messagebox.showinfo("Saved", f"Map saved to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
+
+    # ==========================================
     # PRINT MODE
     # ==========================================
     def print_results(self):
@@ -306,7 +828,6 @@ class BatteryGrouperGUI:
             return
 
         series, parallel = self.last_config
-
         lines = []
         lines.append("=" * 60)
         lines.append(f"  {series}S{parallel}P BATTERY PACK BUILD SHEET".center(60))
@@ -337,7 +858,7 @@ class BatteryGrouperGUI:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write("\n".join(lines))
-            messagebox.showinfo("Saved", f"Printout saved to:\n{filepath}\n\nYou can now open it and send it to a printer.")
+            messagebox.showinfo("Saved", f"Printout saved to:\n{filepath}")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save printout:\n{e}")
 
@@ -346,8 +867,7 @@ class BatteryGrouperGUI:
     # ==========================================
     def export_excel(self):
         if not EXCEL_AVAILABLE:
-            messagebox.showerror("Missing Library",
-                                 "openpyxl is not installed.\n\nOpen Command Prompt and run:\n\npip install openpyxl")
+            messagebox.showerror("Missing Library", "openpyxl is not installed.\n\npip install openpyxl")
             return
 
         if not self.last_groups:
@@ -365,8 +885,6 @@ class BatteryGrouperGUI:
 
         try:
             wb = openpyxl.Workbook()
-
-            # --- Sheet 1: Groups ---
             ws1 = wb.active
             ws1.title = "Parallel Groups"
 
@@ -394,14 +912,11 @@ class BatteryGrouperGUI:
             for col in range(1, 6):
                 ws1.column_dimensions[chr(64 + col)].width = 18
 
-            # --- Sheet 2: Summary ---
             ws2 = wb.create_sheet("Summary")
-            ws2.cell(row=1, column=1, value="Parallel Group").font = header_font
-            ws2.cell(row=1, column=1).fill = header_fill
-            ws2.cell(row=1, column=2, value="Avg Capacity").font = header_font
-            ws2.cell(row=1, column=2).fill = header_fill
-            ws2.cell(row=1, column=3, value="Avg IR").font = header_font
-            ws2.cell(row=1, column=3).fill = header_fill
+            for col, h in enumerate(["Parallel Group", "Avg Capacity", "Avg IR"], 1):
+                c = ws2.cell(row=1, column=col, value=h)
+                c.fill = header_fill
+                c.font = header_font
 
             for p_idx, group in enumerate(self.last_groups, 1):
                 avg_cap = sum(c[1] for c in group) / len(group)
@@ -409,41 +924,35 @@ class BatteryGrouperGUI:
                 ws2.cell(row=p_idx + 1, column=1, value=f"P{p_idx}")
                 ws2.cell(row=p_idx + 1, column=2, value=round(avg_cap, 1))
                 ws2.cell(row=p_idx + 1, column=3, value=round(avg_ir, 1))
-
             ws2.column_dimensions['A'].width = 18
             ws2.column_dimensions['B'].width = 18
             ws2.column_dimensions['C'].width = 18
 
-            # --- Sheet 3: Discarded ---
             if self.last_discarded:
                 ws3 = wb.create_sheet("Discarded")
-                ws3.cell(row=1, column=1, value="Physical ID").font = header_font
-                ws3.cell(row=1, column=1).fill = PatternFill(start_color="E74C3C", end_color="E74C3C", fill_type="solid")
-                ws3.cell(row=1, column=2, value="Capacity (mAh)").font = header_font
-                ws3.cell(row=1, column=2).fill = PatternFill(start_color="E74C3C", end_color="E74C3C", fill_type="solid")
-                ws3.cell(row=1, column=3, value="IR (mΩ)").font = header_font
-                ws3.cell(row=1, column=3).fill = PatternFill(start_color="E74C3C", end_color="E74C3C", fill_type="solid")
-
+                red_fill = PatternFill(start_color="E74C3C", end_color="E74C3C", fill_type="solid")
+                for col, h in enumerate(["Physical ID", "Capacity (mAh)", "IR (mΩ)"], 1):
+                    c = ws3.cell(row=1, column=col, value=h)
+                    c.fill = red_fill
+                    c.font = header_font
                 for i, cell in enumerate(sorted(self.last_discarded, key=lambda c: c[0]), 2):
                     ws3.cell(row=i, column=1, value=cell[0])
                     ws3.cell(row=i, column=2, value=cell[1])
                     ws3.cell(row=i, column=3, value=cell[2])
-
                 for col in ['A', 'B', 'C']:
                     ws3.column_dimensions[col].width = 18
 
             wb.save(filepath)
             messagebox.showinfo("Exported", f"Excel file saved to:\n{filepath}")
-
         except Exception as e:
             messagebox.showerror("Excel Error", f"Failed to export:\n{e}")
 
     # ==========================================
-    # VIEW HISTORY
+    # BUILD HISTORY
     # ==========================================
     def view_history(self):
         if not os.path.exists(HISTORY_FILE):
-            messagebox.showinfo("No History", "No build history yet.\n\nGenerate at least one pack to start recording history.")
+            messagebox.showinfo("No History", "No build history yet.")
             return
 
         try:
@@ -469,8 +978,7 @@ class BatteryGrouperGUI:
             txt.insert(tk.END, f"Config:   {entry.get('config', 'unknown')}\n")
             txt.insert(tk.END, f"Cells:    {entry.get('used_count', '?')} used, {entry.get('discard_count', '?')} discarded\n")
             txt.insert(tk.END, f"Avg Cap:  {entry.get('avg_cap', '?')} mAh\n")
-            txt.insert(tk.END, f"Avg IR:   {entry.get('avg_ir', '?')} mΩ\n")
-            txt.insert(tk.END, "\n")
+            txt.insert(tk.END, f"Avg IR:   {entry.get('avg_ir', '?')} mΩ\n\n")
 
         txt.config(state="disabled")
 
@@ -501,32 +1009,8 @@ class BatteryGrouperGUI:
 
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(history, f, indent=2)
-
         except Exception:
-            pass  # Never block the user for a history write failure
-
-    # ==========================================
-    # SAVE MAP AS PNG
-    # ==========================================
-    def save_map_png(self):
-        if self.current_map_image is None:
-            messagebox.showwarning("No Map", "Please generate the cell map first.")
-            return
-
-        filepath = filedialog.asksaveasfilename(
-            title="Save Cell Map As",
-            defaultextension=".png",
-            filetypes=[("PNG image", "*.png")],
-            initialfile="battery_cell_map.png"
-        )
-        if not filepath:
-            return
-
-        try:
-            self.current_map_image.save(filepath)
-            messagebox.showinfo("Saved", f"Map saved to:\n{filepath}")
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
+            pass
 
     # ==========================================
     # PARSE DATA
@@ -572,7 +1056,7 @@ class BatteryGrouperGUI:
         return raw_data
 
     # ==========================================
-    # DUPLICATE ID DETECTION
+    # CHECKS
     # ==========================================
     def check_duplicate_ids(self, raw_data):
         seen = {}
@@ -585,9 +1069,6 @@ class BatteryGrouperGUI:
                 seen[cid] = True
         return duplicates
 
-    # ==========================================
-    # VOLTAGE SANITY CHECK
-    # ==========================================
     def check_voltages(self, raw_data, min_volt):
         warnings = []
         for cell in raw_data:
@@ -612,19 +1093,17 @@ class BatteryGrouperGUI:
         raw_data = self.parse_data()
 
         if not raw_data:
-            messagebox.showerror("Data Error", "No valid cell data found. Please check your input format.")
+            messagebox.showerror("Data Error", "No valid cell data found.")
             return
 
-        # --- Duplicate ID check ---
         duplicates = self.check_duplicate_ids(raw_data)
         if duplicates:
             msg = "Duplicate Physical IDs detected:\n\n"
             msg += ", ".join(str(d) for d in sorted(set(duplicates)))
-            msg += "\n\nThis usually means you have a copy/paste error. Continue anyway?"
+            msg += "\n\nContinue anyway?"
             if not messagebox.askyesno("Duplicate IDs", msg):
                 return
 
-        # --- Voltage sanity check ---
         if min_volt > 0:
             voltage_warnings = self.check_voltages(raw_data, min_volt)
             if voltage_warnings:
@@ -633,7 +1112,7 @@ class BatteryGrouperGUI:
                     msg += f"  ID #{cell[0]}: {cell[3]}V\n"
                 if len(voltage_warnings) > 10:
                     msg += f"  ... and {len(voltage_warnings) - 10} more\n"
-                msg += "\nThese cells may be self-discharging and unsafe. Continue anyway?"
+                msg += "\nThese may be self-discharging cells. Continue anyway?"
                 if not messagebox.askyesno("Voltage Warning", msg):
                     return
 
@@ -663,10 +1142,8 @@ class BatteryGrouperGUI:
         self.last_config = (series, parallel)
         self.last_raw_data = raw_data
 
-        # Save build to history
         self.save_build_history(series, parallel, groups, self.last_discarded, raw_data)
 
-        # Build output text
         output_str = "="*60 + "\n"
         output_str += f" RECOMMENDED {series}S{parallel}P BATTERY PACK GROUPING \n"
         output_str += "="*60 + "\n"
@@ -712,12 +1189,11 @@ class BatteryGrouperGUI:
         self.root.after(50, self.generate_cell_map)
 
     # ==========================================
-    # GENERATE CELL MAP (in-app preview)
+    # CELL MAP
     # ==========================================
     def generate_cell_map(self):
         if not PIL_AVAILABLE:
-            messagebox.showerror("Missing Library",
-                                 "Pillow is not installed.\n\nOpen Command Prompt and run:\n\npip install pillow")
+            messagebox.showerror("Missing Library", "Pillow is not installed.\n\npip install pillow")
             return
 
         if self.last_groups is None:
@@ -746,7 +1222,6 @@ class BatteryGrouperGUI:
 
             self.map_status.config(text=f"Map generated ({img_w}x{img_h}px). Use 'Save Map as PNG' to export.",
                                    fg="green")
-
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create map:\n{e}")
 
@@ -754,13 +1229,9 @@ class BatteryGrouperGUI:
         if self.last_groups is not None:
             self.generate_cell_map()
 
-    # ==========================================
-    # COLOUR HELPERS
-    # ==========================================
     def _get_color_4cat(self, cell, min_cap, max_cap, min_ir, max_ir):
         cap_range = max(max_cap - min_cap, 1)
         ir_range = max(max_ir - min_ir, 1)
-
         cap_score = (cell[1] - min_cap) / cap_range
         ir_score = 1.0 - ((cell[2] - min_ir) / ir_range)
         score = (cap_score + ir_score) / 2
@@ -811,9 +1282,6 @@ class BatteryGrouperGUI:
         else:
             return self._get_color_4cat(cell, min_cap, max_cap, min_ir, max_ir)
 
-    # ==========================================
-    # BUILD MAP IMAGE (in memory)
-    # ==========================================
     def _build_cell_map_image(self):
         use_heatmap = self.heatmap_var.get()
         groups = self.last_groups
