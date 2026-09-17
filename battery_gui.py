@@ -6,7 +6,7 @@ import csv
 import os
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageTk
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -16,12 +16,13 @@ class BatteryGrouperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Universal Battery Pack Grouper")
-        self.root.geometry("820x780")
+        self.root.geometry("950x900")
 
-        # Store last calculation results so the Cell Map button can use them
         self.last_groups = None
         self.last_discarded = None
         self.last_config = None
+        self.current_map_image = None   # PIL image
+        self.current_map_photo = None   # Tk PhotoImage (must persist)
 
         # --- Configuration Frame ---
         config_frame = tk.LabelFrame(root, text=" 1. Enter Pack Configuration ", padx=10, pady=10)
@@ -49,7 +50,7 @@ class BatteryGrouperGUI:
 
         # --- Data Input Frame ---
         data_frame = tk.LabelFrame(root, text=" 2. Cell Data ", padx=10, pady=10)
-        data_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        data_frame.pack(fill="x", padx=10, pady=5)
 
         top_row = tk.Frame(data_frame)
         top_row.pack(fill="x", pady=(0, 5))
@@ -62,8 +63,8 @@ class BatteryGrouperGUI:
         self.clear_btn = tk.Button(top_row, text="🗑️ Clear", command=self.clear_data, bg="#9E9E9E", fg="white")
         self.clear_btn.pack(side="right", padx=5)
 
-        self.data_text = scrolledtext.ScrolledText(data_frame, height=10)
-        self.data_text.pack(fill="both", expand=True, pady=5)
+        self.data_text = scrolledtext.ScrolledText(data_frame, height=8)
+        self.data_text.pack(fill="x", pady=5)
 
         sample = """(1, 2742, 48), (2, 2338, 58), (3, 2825, 50), (4, 2345, 56), (5, 2468, 61),
 (6, 2374, 55), (7, 2355, 66), (8, 2513, 48), (9, 2386, 59), (10, 2365, 54),
@@ -96,7 +97,7 @@ class BatteryGrouperGUI:
                                  bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.run_btn.pack(side="left", padx=5)
 
-        self.map_btn = tk.Button(btn_frame, text="📊 Generate Cell Map", command=self.generate_cell_map,
+        self.map_btn = tk.Button(btn_frame, text="🗺️ View Cell Map", command=self.generate_cell_map,
                                  bg="#9C27B0", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.map_btn.pack(side="left", padx=5)
 
@@ -104,12 +105,63 @@ class BatteryGrouperGUI:
                                   bg="#FF9800", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.save_btn.pack(side="left", padx=5)
 
-        # --- Output Frame ---
+        # --- Heatmap toggle ---
+        heat_frame = tk.Frame(root)
+        heat_frame.pack(pady=2)
+        self.heatmap_var = tk.BooleanVar(value=False)
+        self.heatmap_check = tk.Checkbutton(heat_frame, text="🌡️ Use Heatmap (smooth colour gradient)",
+                                            variable=self.heatmap_var,
+                                            command=self.refresh_map_if_visible,
+                                            font=("Arial", 10))
+        self.heatmap_check.pack()
+
+        # --- Output Frame with Tabs ---
         out_frame = tk.LabelFrame(root, text=" 3. Results ", padx=10, pady=10)
         out_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        self.output_text = scrolledtext.ScrolledText(out_frame, height=15, state='disabled')
+        self.notebook = ttk.Notebook(out_frame)
+        self.notebook.pack(fill="both", expand=True)
+
+        # Tab 1: Text results
+        tab_text = tk.Frame(self.notebook)
+        self.notebook.add(tab_text, text="  📝 Results Text  ")
+
+        self.output_text = scrolledtext.ScrolledText(tab_text, height=15, state='disabled')
         self.output_text.pack(fill="both", expand=True)
+
+        # Tab 2: Cell map visualisation
+        tab_map = tk.Frame(self.notebook)
+        self.notebook.add(tab_map, text="  🗺️ Cell Map  ")
+
+        map_toolbar = tk.Frame(tab_map)
+        map_toolbar.pack(fill="x", pady=(0, 5))
+
+        self.save_map_btn = tk.Button(map_toolbar, text="💾 Save Map as PNG",
+                                      command=self.save_map_png,
+                                      bg="#607D8B", fg="white", font=("Arial", 10, "bold"))
+        self.save_map_btn.pack(side="left", padx=5)
+
+        self.map_status = tk.Label(map_toolbar, text="Click 'View Cell Map' to generate the map.",
+                                   fg="gray", font=("Arial", 10))
+        self.map_status.pack(side="left", padx=10)
+
+        # Canvas + scrollbars for the map
+        canvas_frame = tk.Frame(tab_map)
+        canvas_frame.pack(fill="both", expand=True)
+
+        self.map_canvas = tk.Canvas(canvas_frame, bg="#f0f0f0")
+        self.map_canvas.grid(row=0, column=0, sticky="nsew")
+
+        h_scroll = tk.Scrollbar(canvas_frame, orient="horizontal", command=self.map_canvas.xview)
+        h_scroll.grid(row=1, column=0, sticky="ew")
+
+        v_scroll = tk.Scrollbar(canvas_frame, orient="vertical", command=self.map_canvas.yview)
+        v_scroll.grid(row=0, column=1, sticky="ns")
+
+        self.map_canvas.configure(xscrollcommand=h_scroll.set, yscrollcommand=v_scroll.set)
+
+        canvas_frame.grid_rowconfigure(0, weight=1)
+        canvas_frame.grid_columnconfigure(0, weight=1)
 
     # ==========================================
     # IMPORT CSV
@@ -202,6 +254,29 @@ class BatteryGrouperGUI:
             messagebox.showerror("Save Error", f"Failed to save file:\n{e}")
 
     # ==========================================
+    # SAVE MAP AS PNG
+    # ==========================================
+    def save_map_png(self):
+        if self.current_map_image is None:
+            messagebox.showwarning("No Map", "Please generate the cell map first.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Cell Map As",
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png")],
+            initialfile="battery_cell_map.png"
+        )
+        if not filepath:
+            return
+
+        try:
+            self.current_map_image.save(filepath)
+            messagebox.showinfo("Saved", f"Map saved to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save image:\n{e}")
+
+    # ==========================================
     # PARSE DATA
     # ==========================================
     def parse_data(self):
@@ -270,7 +345,6 @@ class BatteryGrouperGUI:
                 group_index = (series * 2 - 1) - cycle_position
             groups[group_index].append(used_cells[i])
 
-        # Store for later use by Cell Map button
         self.last_groups = groups
         self.last_discarded = rejected_by_filter + discarded_cells
         self.last_config = (series, parallel)
@@ -316,8 +390,13 @@ class BatteryGrouperGUI:
         self.output_text.insert(tk.END, output_str)
         self.output_text.config(state='disabled')
 
+        # Auto-switch to the map tab and refresh it
+        self.notebook.select(1)
+        # Wait 50ms for the tab to become visible, then draw the map
+        self.root.after(50, self.generate_cell_map)
+
     # ==========================================
-    # GENERATE CELL MAP IMAGE
+    # GENERATE CELL MAP (in-app preview)
     # ==========================================
     def generate_cell_map(self):
         if not PIL_AVAILABLE:
@@ -329,53 +408,116 @@ class BatteryGrouperGUI:
             messagebox.showwarning("No Data", "Please click 'Generate Pack Groupings' first.")
             return
 
-        filepath = filedialog.asksaveasfilename(
-            title="Save Cell Map As",
-            defaultextension=".png",
-            filetypes=[("PNG image", "*.png")],
-            initialfile="battery_cell_map.png"
-        )
-        if not filepath:
-            return
-
         try:
-            self._draw_cell_map(filepath)
-            messagebox.showinfo("Saved", f"Cell map saved to:\n{filepath}")
+            self.current_map_image = self._build_cell_map_image()
+
+            # Fit into canvas (scale down if too big)
+            canvas_w = self.map_canvas.winfo_width() or 850
+            canvas_h = self.map_canvas.winfo_height() or 400
+
+            img_w, img_h = self.current_map_image.size
+            scale = min(1.0, (canvas_w - 20) / img_w, (canvas_h - 20) / img_h)
+            if scale < 1.0:
+                new_size = (int(img_w * scale), int(img_h * scale))
+                display_img = self.current_map_image.resize(new_size, Image.LANCZOS)
+            else:
+                display_img = self.current_map_image
+
+            self.current_map_photo = ImageTk.PhotoImage(display_img)
+
+            self.map_canvas.delete("all")
+            self.map_canvas.create_image(10, 10, anchor="nw", image=self.current_map_photo)
+            self.map_canvas.configure(scrollregion=(0, 0, display_img.size[0] + 20, display_img.size[1] + 20))
+
+            self.map_status.config(text=f"Map generated ({img_w}x{img_h}px). Use 'Save Map as PNG' to export.",
+                                   fg="green")
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create map:\n{e}")
 
-    def _get_color(self, cell, min_cap, max_cap, min_ir, max_ir):
-        """Returns (bg, text) colour tuple based on quality."""
+    def refresh_map_if_visible(self):
+        """Called when the heatmap checkbox is toggled."""
+        if self.last_groups is not None:
+            self.generate_cell_map()
+
+    # ==========================================
+    # COLOUR HELPERS
+    # ==========================================
+    def _get_color_4cat(self, cell, min_cap, max_cap, min_ir, max_ir):
         cap_range = max(max_cap - min_cap, 1)
         ir_range = max(max_ir - min_ir, 1)
 
-        cap_score = (cell[1] - min_cap) / cap_range   # 0.0 = worst, 1.0 = best
-        ir_score = 1.0 - ((cell[2] - min_ir) / ir_range)  # 0.0 = worst, 1.0 = best
+        cap_score = (cell[1] - min_cap) / cap_range
+        ir_score = 1.0 - ((cell[2] - min_ir) / ir_range)
 
         score = (cap_score + ir_score) / 2
 
         if score >= 0.75:
-            return (34, 177, 76), "white"    # strong green
+            return (34, 177, 76), "white"
         elif score >= 0.5:
-            return (146, 208, 80), "black"   # light green
+            return (146, 208, 80), "black"
         elif score >= 0.25:
-            return (255, 217, 102), "black"  # yellow
+            return (255, 217, 102), "black"
         else:
-            return (231, 76, 60), "white"    # red
+            return (231, 76, 60), "white"
 
-    def _draw_cell_map(self, filepath):
+    def _heatmap_color(self, score):
+        score = max(0.0, min(1.0, score))
+
+        stops = [
+            (0.00, (215, 48, 39)),
+            (0.25, (253, 174, 97)),
+            (0.50, (255, 255, 191)),
+            (0.75, (166, 217, 106)),
+            (1.00, (26, 152, 80)),
+        ]
+
+        for i in range(len(stops) - 1):
+            low_pos, low_col = stops[i]
+            high_pos, high_col = stops[i + 1]
+            if low_pos <= score <= high_pos:
+                t = (score - low_pos) / (high_pos - low_pos)
+                r = int(low_col[0] + t * (high_col[0] - low_col[0]))
+                g = int(low_col[1] + t * (high_col[1] - low_col[1]))
+                b = int(low_col[2] + t * (high_col[2] - low_col[2]))
+                return (r, g, b)
+
+        return stops[-1][1]
+
+    def _get_text_color(self, bg):
+        brightness = (bg[0] * 299 + bg[1] * 587 + bg[2] * 114) / 1000
+        return "black" if brightness > 140 else "white"
+
+    def _get_cell_color(self, cell, min_cap, max_cap, min_ir, max_ir, use_heatmap):
+        if use_heatmap:
+            cap_range = max(max_cap - min_cap, 1)
+            ir_range = max(max_ir - min_ir, 1)
+
+            cap_score = (cell[1] - min_cap) / cap_range
+            ir_score = 1.0 - ((cell[2] - min_ir) / ir_range)
+            score = (cap_score + ir_score) / 2
+
+            bg = self._heatmap_color(score)
+            txt = self._get_text_color(bg)
+            return bg, txt
+        else:
+            return self._get_color_4cat(cell, min_cap, max_cap, min_ir, max_ir)
+
+    # ==========================================
+    # BUILD MAP IMAGE (in memory)
+    # ==========================================
+    def _build_cell_map_image(self):
+        use_heatmap = self.heatmap_var.get()
         groups = self.last_groups
         discarded = self.last_discarded
         series, parallel = self.last_config
 
-        # Gather all used cells to determine scale
         all_used = [c for g in groups for c in g]
         min_cap = min(c[1] for c in all_used)
         max_cap = max(c[1] for c in all_used)
         min_ir = min(c[2] for c in all_used)
         max_ir = max(c[2] for c in all_used)
 
-        # Layout constants
         cell_w = 70
         cell_h = 70
         padding = 15
@@ -386,12 +528,11 @@ class BatteryGrouperGUI:
         rows = parallel
 
         img_w = left_margin * 2 + cols * (cell_w + padding)
-        img_h = top_margin + rows * (cell_h + padding) + 200
+        img_h = top_margin + rows * (cell_h + padding) + 220
 
         img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
         draw = ImageDraw.Draw(img)
 
-        # Try to load a truetype font, fallback to default
         try:
             font_big = ImageFont.truetype("arial.ttf", 22)
             font_med = ImageFont.truetype("arial.ttf", 14)
@@ -401,39 +542,47 @@ class BatteryGrouperGUI:
             font_med = ImageFont.load_default()
             font_small = ImageFont.load_default()
 
-        # --- Title ---
-        title = f"{series}S{parallel}P Cell Map"
+        mode_label = "Heatmap Mode" if use_heatmap else "Category Mode"
+        title = f"{series}S{parallel}P Cell Map ({mode_label})"
         draw.text((left_margin, 20), title, fill=(0, 0, 0), font=font_big)
         draw.text((left_margin, 55),
                   f"Min Cap: {min_cap:.0f} | Max Cap: {max_cap:.0f} | Min IR: {min_ir:.0f} | Max IR: {max_ir:.0f}",
                   fill=(80, 80, 80), font=font_small)
 
-        # --- Legend ---
         legend_y = 90
-        legend_items = [
-            ((34, 177, 76), "Strong"),
-            ((146, 208, 80), "Good"),
-            ((255, 217, 102), "Weak"),
-            ((231, 76, 60), "Discarded"),
-        ]
-        legend_x = left_margin
-        for color, label in legend_items:
-            draw.rectangle([legend_x, legend_y, legend_x + 20, legend_y + 20], fill=color, outline=(0, 0, 0))
-            draw.text((legend_x + 25, legend_y + 3), label, fill=(0, 0, 0), font=font_small)
-            legend_x += 100
+        if use_heatmap:
+            bar_x = left_margin
+            bar_w = 400
+            bar_h = 20
+            for i in range(bar_w):
+                score = i / (bar_w - 1)
+                color = self._heatmap_color(score)
+                draw.line([(bar_x + i, legend_y), (bar_x + i, legend_y + bar_h)], fill=color)
 
-        # --- Column Headers (P1..P13) ---
+            draw.rectangle([bar_x, legend_y, bar_x + bar_w, legend_y + bar_h], outline=(0, 0, 0))
+            draw.text((bar_x, legend_y + bar_h + 3), "Weak / Bad", fill=(0, 0, 0), font=font_small)
+            draw.text((bar_x + bar_w - 70, legend_y + bar_h + 3), "Strong / Good", fill=(0, 0, 0), font=font_small)
+        else:
+            legend_items = [
+                ((34, 177, 76), "Strong"),
+                ((146, 208, 80), "Good"),
+                ((255, 217, 102), "Weak"),
+                ((231, 76, 60), "Discarded"),
+            ]
+            legend_x = left_margin
+            for color, label in legend_items:
+                draw.rectangle([legend_x, legend_y, legend_x + 20, legend_y + 20], fill=color, outline=(0, 0, 0))
+                draw.text((legend_x + 25, legend_y + 3), label, fill=(0, 0, 0), font=font_small)
+                legend_x += 100
+
         for p_idx in range(series):
             x = left_margin + p_idx * (cell_w + padding) + cell_w // 2
             header = f"P{p_idx + 1}"
-            # Center the header text
             bbox = draw.textbbox((0, 0), header, font=font_med)
             tw = bbox[2] - bbox[0]
             draw.text((x - tw // 2, top_margin - 25), header, fill=(0, 0, 0), font=font_med)
 
-        # --- Cell Grids ---
         for p_idx, group in enumerate(groups):
-            # Sort so strongest is at the top of each column
             group_sorted = sorted(group, key=lambda c: c[1], reverse=True)
 
             for s_idx, cell in enumerate(group_sorted):
@@ -442,18 +591,15 @@ class BatteryGrouperGUI:
                 x2 = x1 + cell_w
                 y2 = y1 + cell_h
 
-                bg, txt_color = self._get_color(cell, min_cap, max_cap, min_ir, max_ir)
+                bg, txt_color = self._get_cell_color(cell, min_cap, max_cap, min_ir, max_ir, use_heatmap)
                 draw.rectangle([x1, y1, x2, y2], fill=bg, outline=(0, 0, 0), width=2)
 
-                # Big ID number centered
                 id_str = str(cell[0])
                 bbox = draw.textbbox((0, 0), id_str, font=font_big)
                 tw = bbox[2] - bbox[0]
-                th = bbox[3] - bbox[1]
                 draw.text((x1 + (cell_w - tw) // 2, y1 + 8),
                           id_str, fill=txt_color, font=font_big)
 
-                # Small capacity + IR below
                 info = f"{int(cell[1])}mAh"
                 bbox2 = draw.textbbox((0, 0), info, font=font_small)
                 tw2 = bbox2[2] - bbox2[0]
@@ -466,7 +612,6 @@ class BatteryGrouperGUI:
                 draw.text((x1 + (cell_w - tw3) // 2, y1 + 52),
                           info2, fill=txt_color, font=font_small)
 
-        # --- Discarded Cells Section ---
         if discarded:
             discard_y = top_margin + rows * (cell_h + padding) + 30
             draw.text((left_margin, discard_y - 25),
@@ -507,7 +652,7 @@ class BatteryGrouperGUI:
                 draw.text((x1 + (small_w - tw3) // 2, y1 + 38),
                           ir_str, fill="white", font=font_small)
 
-        img.save(filepath)
+        return img
 
 
 if __name__ == "__main__":
