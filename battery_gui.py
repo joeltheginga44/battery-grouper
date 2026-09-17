@@ -5,11 +5,23 @@ import re
 import csv
 import os
 
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+
 class BatteryGrouperGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Universal Battery Pack Grouper")
-        self.root.geometry("800x750")
+        self.root.geometry("820x780")
+
+        # Store last calculation results so the Cell Map button can use them
+        self.last_groups = None
+        self.last_discarded = None
+        self.last_config = None
 
         # --- Configuration Frame ---
         config_frame = tk.LabelFrame(root, text=" 1. Enter Pack Configuration ", padx=10, pady=10)
@@ -39,7 +51,6 @@ class BatteryGrouperGUI:
         data_frame = tk.LabelFrame(root, text=" 2. Cell Data ", padx=10, pady=10)
         data_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Instructions + Buttons row
         top_row = tk.Frame(data_frame)
         top_row.pack(fill="x", pady=(0, 5))
 
@@ -54,7 +65,6 @@ class BatteryGrouperGUI:
         self.data_text = scrolledtext.ScrolledText(data_frame, height=10)
         self.data_text.pack(fill="both", expand=True, pady=5)
 
-        # Sample data
         sample = """(1, 2742, 48), (2, 2338, 58), (3, 2825, 50), (4, 2345, 56), (5, 2468, 61),
 (6, 2374, 55), (7, 2355, 66), (8, 2513, 48), (9, 2386, 59), (10, 2365, 54),
 (11, 2477, 57), (12, 2407, 55), (13, 2417, 48), (14, 2289, 56), (15, 2338, 64),
@@ -83,11 +93,15 @@ class BatteryGrouperGUI:
         btn_frame.pack(pady=5)
 
         self.run_btn = tk.Button(btn_frame, text="⚡ GENERATE PACK GROUPINGS", command=self.run_calculation,
-                                 bg="#4CAF50", fg="white", font=("Arial", 12, "bold"), padx=20, pady=5)
+                                 bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.run_btn.pack(side="left", padx=5)
 
+        self.map_btn = tk.Button(btn_frame, text="📊 Generate Cell Map", command=self.generate_cell_map,
+                                 bg="#9C27B0", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
+        self.map_btn.pack(side="left", padx=5)
+
         self.save_btn = tk.Button(btn_frame, text="💾 Save Results", command=self.save_results,
-                                  bg="#FF9800", fg="white", font=("Arial", 12, "bold"), padx=20, pady=5)
+                                  bg="#FF9800", fg="white", font=("Arial", 11, "bold"), padx=15, pady=5)
         self.save_btn.pack(side="left", padx=5)
 
         # --- Output Frame ---
@@ -111,7 +125,6 @@ class BatteryGrouperGUI:
         try:
             cells = []
             with open(filepath, 'r', newline='', encoding='utf-8-sig') as f:
-                # Try to sniff the delimiter (comma, semicolon, tab)
                 sample = f.read(2048)
                 f.seek(0)
                 try:
@@ -125,8 +138,6 @@ class BatteryGrouperGUI:
                 for row in reader:
                     if not row or len(row) < 3:
                         continue
-
-                    # Skip header row if it contains text
                     if not header_skipped:
                         try:
                             int(row[0])
@@ -143,13 +154,12 @@ class BatteryGrouperGUI:
                         ir = float(row[2].strip())
                         cells.append((cell_id, cap, ir))
                     except ValueError:
-                        continue  # skip bad rows
+                        continue
 
             if not cells:
                 messagebox.showerror("CSV Error", "No valid data found in the CSV file.\n\nExpected format: ID, Capacity, IR")
                 return
 
-            # Format as (ID, Cap, IR), (ID, Cap, IR)... and load into the text box
             formatted = ", ".join(f"({c[0]}, {c[1]}, {c[2]})" for c in cells)
             self.data_text.delete("1.0", tk.END)
             self.data_text.insert("1.0", formatted)
@@ -198,7 +208,6 @@ class BatteryGrouperGUI:
         raw_data = []
         text_content = self.data_text.get("1.0", tk.END).strip()
 
-        # Try tuple format: (ID, Cap, IR)
         pattern = r'\(\s*(\d+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)'
         matches = re.findall(pattern, text_content)
 
@@ -209,7 +218,6 @@ class BatteryGrouperGUI:
                 except ValueError:
                     continue
         else:
-            # Fall back to line-by-line: ID, Cap, IR
             for line in text_content.split('\n'):
                 if not line.strip():
                     continue
@@ -226,7 +234,6 @@ class BatteryGrouperGUI:
     # RUN CALCULATION
     # ==========================================
     def run_calculation(self):
-        # 1. Get Configuration
         try:
             series = int(self.series_entry.get())
             parallel = int(self.parallel_entry.get())
@@ -236,14 +243,12 @@ class BatteryGrouperGUI:
             messagebox.showerror("Input Error", "Please enter valid numbers for Series, Parallel, Capacity, and IR.")
             return
 
-        # 2. Parse Data
         raw_data = self.parse_data()
 
         if not raw_data:
             messagebox.showerror("Data Error", "No valid cell data found. Please check your input format.")
             return
 
-        # 3. Filter and Calculate
         valid_cells = [c for c in raw_data if c[1] >= min_cap and c[2] <= max_ir]
         total_needed = series * parallel
 
@@ -265,7 +270,11 @@ class BatteryGrouperGUI:
                 group_index = (series * 2 - 1) - cycle_position
             groups[group_index].append(used_cells[i])
 
-        # 4. Format Output
+        # Store for later use by Cell Map button
+        self.last_groups = groups
+        self.last_discarded = rejected_by_filter + discarded_cells
+        self.last_config = (series, parallel)
+
         output_str = "="*60 + "\n"
         output_str += f" RECOMMENDED {series}S{parallel}P BATTERY PACK GROUPING \n"
         output_str += "="*60 + "\n"
@@ -302,11 +311,204 @@ class BatteryGrouperGUI:
                     output_str += f"  [ID: {cell[0]:3}] -> Cap: {cell[1]} mAh | IR: {cell[2]} mOhm\n"
             output_str += f"\nTotal Discarded: {len(rejected_by_filter) + len(discarded_cells)} cells\n"
 
-        # 5. Display Output
         self.output_text.config(state='normal')
         self.output_text.delete("1.0", tk.END)
         self.output_text.insert(tk.END, output_str)
         self.output_text.config(state='disabled')
+
+    # ==========================================
+    # GENERATE CELL MAP IMAGE
+    # ==========================================
+    def generate_cell_map(self):
+        if not PIL_AVAILABLE:
+            messagebox.showerror("Missing Library",
+                                 "Pillow is not installed.\n\nOpen Command Prompt and run:\n\npip install pillow")
+            return
+
+        if self.last_groups is None:
+            messagebox.showwarning("No Data", "Please click 'Generate Pack Groupings' first.")
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Save Cell Map As",
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png")],
+            initialfile="battery_cell_map.png"
+        )
+        if not filepath:
+            return
+
+        try:
+            self._draw_cell_map(filepath)
+            messagebox.showinfo("Saved", f"Cell map saved to:\n{filepath}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create map:\n{e}")
+
+    def _get_color(self, cell, min_cap, max_cap, min_ir, max_ir):
+        """Returns (bg, text) colour tuple based on quality."""
+        cap_range = max(max_cap - min_cap, 1)
+        ir_range = max(max_ir - min_ir, 1)
+
+        cap_score = (cell[1] - min_cap) / cap_range   # 0.0 = worst, 1.0 = best
+        ir_score = 1.0 - ((cell[2] - min_ir) / ir_range)  # 0.0 = worst, 1.0 = best
+
+        score = (cap_score + ir_score) / 2
+
+        if score >= 0.75:
+            return (34, 177, 76), "white"    # strong green
+        elif score >= 0.5:
+            return (146, 208, 80), "black"   # light green
+        elif score >= 0.25:
+            return (255, 217, 102), "black"  # yellow
+        else:
+            return (231, 76, 60), "white"    # red
+
+    def _draw_cell_map(self, filepath):
+        groups = self.last_groups
+        discarded = self.last_discarded
+        series, parallel = self.last_config
+
+        # Gather all used cells to determine scale
+        all_used = [c for g in groups for c in g]
+        min_cap = min(c[1] for c in all_used)
+        max_cap = max(c[1] for c in all_used)
+        min_ir = min(c[2] for c in all_used)
+        max_ir = max(c[2] for c in all_used)
+
+        # Layout constants
+        cell_w = 70
+        cell_h = 70
+        padding = 15
+        top_margin = 140
+        left_margin = 30
+
+        cols = series
+        rows = parallel
+
+        img_w = left_margin * 2 + cols * (cell_w + padding)
+        img_h = top_margin + rows * (cell_h + padding) + 200
+
+        img = Image.new("RGB", (img_w, img_h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+
+        # Try to load a truetype font, fallback to default
+        try:
+            font_big = ImageFont.truetype("arial.ttf", 22)
+            font_med = ImageFont.truetype("arial.ttf", 14)
+            font_small = ImageFont.truetype("arial.ttf", 11)
+        except IOError:
+            font_big = ImageFont.load_default()
+            font_med = ImageFont.load_default()
+            font_small = ImageFont.load_default()
+
+        # --- Title ---
+        title = f"{series}S{parallel}P Cell Map"
+        draw.text((left_margin, 20), title, fill=(0, 0, 0), font=font_big)
+        draw.text((left_margin, 55),
+                  f"Min Cap: {min_cap:.0f} | Max Cap: {max_cap:.0f} | Min IR: {min_ir:.0f} | Max IR: {max_ir:.0f}",
+                  fill=(80, 80, 80), font=font_small)
+
+        # --- Legend ---
+        legend_y = 90
+        legend_items = [
+            ((34, 177, 76), "Strong"),
+            ((146, 208, 80), "Good"),
+            ((255, 217, 102), "Weak"),
+            ((231, 76, 60), "Discarded"),
+        ]
+        legend_x = left_margin
+        for color, label in legend_items:
+            draw.rectangle([legend_x, legend_y, legend_x + 20, legend_y + 20], fill=color, outline=(0, 0, 0))
+            draw.text((legend_x + 25, legend_y + 3), label, fill=(0, 0, 0), font=font_small)
+            legend_x += 100
+
+        # --- Column Headers (P1..P13) ---
+        for p_idx in range(series):
+            x = left_margin + p_idx * (cell_w + padding) + cell_w // 2
+            header = f"P{p_idx + 1}"
+            # Center the header text
+            bbox = draw.textbbox((0, 0), header, font=font_med)
+            tw = bbox[2] - bbox[0]
+            draw.text((x - tw // 2, top_margin - 25), header, fill=(0, 0, 0), font=font_med)
+
+        # --- Cell Grids ---
+        for p_idx, group in enumerate(groups):
+            # Sort so strongest is at the top of each column
+            group_sorted = sorted(group, key=lambda c: c[1], reverse=True)
+
+            for s_idx, cell in enumerate(group_sorted):
+                x1 = left_margin + p_idx * (cell_w + padding)
+                y1 = top_margin + s_idx * (cell_h + padding)
+                x2 = x1 + cell_w
+                y2 = y1 + cell_h
+
+                bg, txt_color = self._get_color(cell, min_cap, max_cap, min_ir, max_ir)
+                draw.rectangle([x1, y1, x2, y2], fill=bg, outline=(0, 0, 0), width=2)
+
+                # Big ID number centered
+                id_str = str(cell[0])
+                bbox = draw.textbbox((0, 0), id_str, font=font_big)
+                tw = bbox[2] - bbox[0]
+                th = bbox[3] - bbox[1]
+                draw.text((x1 + (cell_w - tw) // 2, y1 + 8),
+                          id_str, fill=txt_color, font=font_big)
+
+                # Small capacity + IR below
+                info = f"{int(cell[1])}mAh"
+                bbox2 = draw.textbbox((0, 0), info, font=font_small)
+                tw2 = bbox2[2] - bbox2[0]
+                draw.text((x1 + (cell_w - tw2) // 2, y1 + 38),
+                          info, fill=txt_color, font=font_small)
+
+                info2 = f"{int(cell[2])}mΩ"
+                bbox3 = draw.textbbox((0, 0), info2, font=font_small)
+                tw3 = bbox3[2] - bbox3[0]
+                draw.text((x1 + (cell_w - tw3) // 2, y1 + 52),
+                          info2, fill=txt_color, font=font_small)
+
+        # --- Discarded Cells Section ---
+        if discarded:
+            discard_y = top_margin + rows * (cell_h + padding) + 30
+            draw.text((left_margin, discard_y - 25),
+                      f"Discarded Cells ({len(discarded)})",
+                      fill=(0, 0, 0), font=font_med)
+
+            small_w = 55
+            small_h = 55
+            small_pad = 8
+            max_per_row = (img_w - left_margin * 2) // (small_w + small_pad)
+
+            discarded_sorted = sorted(discarded, key=lambda c: c[0])
+
+            for i, cell in enumerate(discarded_sorted):
+                row = i // max_per_row
+                col = i % max_per_row
+                x1 = left_margin + col * (small_w + small_pad)
+                y1 = discard_y + row * (small_h + small_pad)
+                x2 = x1 + small_w
+                y2 = y1 + small_h
+
+                draw.rectangle([x1, y1, x2, y2], fill=(231, 76, 60), outline=(0, 0, 0))
+                id_str = str(cell[0])
+                bbox = draw.textbbox((0, 0), id_str, font=font_med)
+                tw = bbox[2] - bbox[0]
+                draw.text((x1 + (small_w - tw) // 2, y1 + 6),
+                          id_str, fill="white", font=font_med)
+
+                cap_str = f"{int(cell[1])}"
+                bbox2 = draw.textbbox((0, 0), cap_str, font=font_small)
+                tw2 = bbox2[2] - bbox2[0]
+                draw.text((x1 + (small_w - tw2) // 2, y1 + 24),
+                          cap_str, fill="white", font=font_small)
+
+                ir_str = f"{int(cell[2])}Ω"
+                bbox3 = draw.textbbox((0, 0), ir_str, font=font_small)
+                tw3 = bbox3[2] - bbox3[0]
+                draw.text((x1 + (small_w - tw3) // 2, y1 + 38),
+                          ir_str, fill="white", font=font_small)
+
+        img.save(filepath)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
