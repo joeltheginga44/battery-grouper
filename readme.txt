@@ -1,5 +1,5 @@
 # Universal Battery Pack Grouper
-![Screenshot](battery_grouper.png)
+
 A Python-based GUI tool designed to help battery builders create perfectly balanced lithium-ion battery packs (e.g., 18650, 21700). 
 
 ## 📖 Description
